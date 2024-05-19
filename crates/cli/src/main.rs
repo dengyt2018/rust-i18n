@@ -2,6 +2,7 @@ use anyhow::Error;
 use clap::{Args, Parser};
 use rust_i18n_extract::extractor::Message;
 use rust_i18n_extract::{extractor, generator, iter};
+use rust_i18n_support::merge_locales::{get_merged_string, write_to_file};
 use rust_i18n_support::{I18nConfig, MinifyKey};
 use std::{collections::HashMap, path::Path};
 
@@ -37,6 +38,11 @@ struct I18nArgs {
     /// Extract all untranslated I18n texts from source code
     #[arg(default_value = "./", last = true)]
     source: Option<String>,
+    /// Merge TODO file to the localization file.
+    ///
+    /// Or merge other files into a new file using `-m other.yml new.yml`.
+    #[arg(short, long, num_args(1..), name = "Translated Files")]
+    merge: Option<Vec<String>>,
 }
 
 /// Remove quotes from a string at the start and end.
@@ -96,12 +102,21 @@ fn add_translations(
     }
 }
 
+fn merge_translated_files(files: &[String]) {
+    write_to_file(&get_merged_string(files), files.last().unwrap());
+    std::process::exit(0);
+}
+
 fn main() -> Result<(), Error> {
     let CargoCli::I18n(args) = CargoCli::parse();
 
     let mut results = HashMap::new();
 
     let source_path = args.source.expect("Missing source path");
+
+    if let Some(files) = args.merge {
+        merge_translated_files(&files);
+    }
 
     let cfg = I18nConfig::load(std::path::Path::new(&source_path))?;
 

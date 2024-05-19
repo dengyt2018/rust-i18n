@@ -7,6 +7,7 @@ mod atomic_str;
 mod backend;
 mod config;
 mod cow_str;
+pub mod merge_locales;
 mod minify_key;
 pub use atomic_str::AtomicStr;
 pub use backend::{Backend, BackendExt, SimpleBackend};
@@ -26,7 +27,7 @@ pub fn is_debug() -> bool {
 }
 
 /// Merge JSON Values, merge b into a
-fn merge_value(a: &mut Value, b: &Value) {
+pub fn merge_value(a: &mut Value, b: &Value) {
     match (a, b) {
         (Value::Object(a), Value::Object(b)) => {
             for (k, v) in b {
@@ -95,17 +96,11 @@ pub fn load_locales<F: Fn(&str) -> bool>(
             .and_then(|s| s.split('.').last())
             .unwrap();
 
-        let ext = entry.extension().and_then(|s| s.to_str()).unwrap();
+        let ext = get_extension(&entry);
 
-        let file = File::open(&entry).expect("Failed to open file");
-        let mut reader = std::io::BufReader::new(file);
-        let mut content = String::new();
+        let content = open_file_to_string(&entry);
 
-        reader
-            .read_to_string(&mut content)
-            .expect("Read file failed.");
-
-        let trs = parse_file(&content, ext, locale)
+        let trs = parse_file(&content, &ext, locale)
             .unwrap_or_else(|_| panic!("Parse file `{}` failed", entry.display()));
 
         trs.into_iter().for_each(|(k, new_value)| {
@@ -123,9 +118,9 @@ pub fn load_locales<F: Fn(&str) -> bool>(
     result
 }
 
-// Parse Translations from file to support multiple formats
-fn parse_file(content: &str, ext: &str, locale: &str) -> Result<Translations, String> {
-    let result = match ext {
+#[inline]
+pub fn parse_string_to_serde_json(content: &str, ext: &str) -> Result<Value, String> {
+    match ext {
         "yml" | "yaml" => serde_yaml::from_str::<serde_json::Value>(content)
             .map_err(|err| format!("Invalid YAML format, {}", err)),
         "json" => serde_json::from_str::<serde_json::Value>(content)
@@ -133,7 +128,12 @@ fn parse_file(content: &str, ext: &str, locale: &str) -> Result<Translations, St
         "toml" => toml::from_str::<serde_json::Value>(content)
             .map_err(|err| format!("Invalid TOML format, {}", err)),
         _ => Err("Invalid file extension".into()),
-    };
+    }
+}
+
+// Parse Translations from file to support multiple formats
+fn parse_file(content: &str, ext: &str, locale: &str) -> Result<Translations, String> {
+    let result = parse_string_to_serde_json(content, ext);
 
     match result {
         Ok(v) => match get_version(&v) {
@@ -235,6 +235,34 @@ fn parse_file_v2(key_prefix: &str, data: &serde_json::Value) -> Option<Translati
     None
 }
 
+#[inline]
+pub fn get_extension<P>(entry: P) -> String
+where
+    P: AsRef<Path>,
+{
+    entry
+        .as_ref()
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap()
+        .to_string()
+}
+
+#[inline]
+pub fn open_file_to_string<P>(path: P) -> String
+where
+    P: AsRef<Path>,
+{
+    let f = File::open(path.as_ref())
+        .unwrap_or_else(|_| panic!("Failed to open file {}.", path.as_ref().to_str().unwrap()));
+    let mut reader = std::io::BufReader::new(f);
+    let mut content = String::new();
+    reader
+        .read_to_string(&mut content)
+        .expect("Read file failed.");
+    content
+}
+
 /// Get `_version` from JSON root
 /// If `_version` is not found, then return 1 as default.
 fn get_version(data: &serde_json::Value) -> usize {
@@ -291,7 +319,7 @@ fn flatten_keys(prefix: &str, trs: &Value) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_value, parse_file};
+    use super::{get_extension, merge_value, parse_file};
 
     #[test]
     fn test_merge_value() {
@@ -405,5 +433,18 @@ mod tests {
         assert_eq!(trs["en"]["welcome.sub"], "Welcome 1");
         assert_eq!(trs["zh-CN"]["welcome.sub"], "欢迎 1");
         assert_eq!(trs["jp"]["welcome.sub"], "ようこそ 1");
+    }
+
+    #[test]
+    fn test_get_extension() {
+        let path_str = "foobar.yml";
+        let path = std::path::Path::new(path_str);
+        let path_buff: std::path::PathBuf = path.into();
+        let path_osstr = path.as_os_str();
+
+        assert_eq!(get_extension(path_str).as_str(), "yml");
+        assert_eq!(get_extension(path).as_str(), "yml");
+        assert_eq!(get_extension(path_buff).as_str(), "yml");
+        assert_eq!(get_extension(path_osstr).as_str(), "yml");
     }
 }
