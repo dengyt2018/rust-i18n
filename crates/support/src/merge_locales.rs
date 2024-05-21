@@ -3,20 +3,22 @@ use std::path::{Path, PathBuf};
 
 use crate::{get_extension, merge_value, open_file_to_string, parse_string_to_serde_json};
 
-pub fn get_merged_string<S: AsRef<str>>(files: &[S]) -> String {
-    let all_locales = open_locales_files(&get_locales_files_path(files));
+/// Merge all translated files together
+pub fn get_merged_string<S: AsRef<Path>>(files: &[S]) -> serde_json::Value {
+    let all_translated_files = open_locales_files(&get_locales_files_path(files));
     let mut all_merged_value = serde_json::Value::default();
 
-    for (content, path) in all_locales {
+    for (content, path) in all_translated_files {
         let ext = get_extension(path);
         if let Ok(tmp) = parse_string_to_serde_json(&content, &ext) {
             merge_value(&mut all_merged_value, &tmp);
         }
     }
 
-    serde_json::to_string_pretty(&all_merged_value).unwrap()
+    all_merged_value
 }
 
+/// Open all translated files to string with path
 fn open_locales_files(entry: &[PathBuf]) -> Vec<(String, PathBuf)> {
     entry
         .iter()
@@ -25,7 +27,7 @@ fn open_locales_files(entry: &[PathBuf]) -> Vec<(String, PathBuf)> {
 }
 
 /// Format input parameters as available paths
-fn get_locales_files_path<S: AsRef<str>>(files: &[S]) -> Vec<PathBuf> {
+fn get_locales_files_path<S: AsRef<Path>>(files: &[S]) -> Vec<PathBuf> {
     let all_support_ext = ["yml", "yaml", "json", "toml"];
     let file_path = Path::new(files.first().unwrap().as_ref());
     let ext = get_extension(file_path);
@@ -59,7 +61,7 @@ fn get_locales_files_path<S: AsRef<str>>(files: &[S]) -> Vec<PathBuf> {
 }
 
 /// Convert serde Value to the correct format
-fn convert_serde_to_string(value: serde_json::Value, format: &str) -> String {
+fn convert_serde_to_string(value: &serde_json::Value, format: &str) -> String {
     match format {
         "json" => serde_json::to_string_pretty(&value).unwrap(),
         "yaml" | "yml" => {
@@ -72,15 +74,13 @@ fn convert_serde_to_string(value: serde_json::Value, format: &str) -> String {
     }
 }
 
-pub fn write_to_file(content: &str, filename: &str) {
-    let file_path = Path::new(filename);
+pub fn write_to_file<F: AsRef<Path>>(content: &serde_json::Value, filename: F) {
+    let file_path = Path::new(filename.as_ref());
     let ext = get_extension(file_path);
 
     let mut file = std::fs::File::create(file_path).unwrap();
 
-    let v = serde_json::from_str::<serde_json::Value>(content).unwrap();
-
-    let result = convert_serde_to_string(v, &ext);
+    let result = convert_serde_to_string(content, &ext);
 
     writeln!(&mut file, "{}", result)
         .unwrap_or_else(|_| panic!("Unable to create file {}.", file_path.to_str().unwrap()));
@@ -89,6 +89,8 @@ pub fn write_to_file(content: &str, filename: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::open_file_to_string;
+    use std::io::Write;
 
     macro_rules! assert_vec_eq {
         ($path_buff:expr, $path_string:expr) => {
@@ -96,6 +98,14 @@ mod tests {
                 let path = p.to_str().unwrap();
                 assert!($path_string.contains(&path));
             });
+        };
+    }
+
+    macro_rules! write_file {
+        ($content:expr, $path:expr) => {
+            let mut file = std::fs::File::create($path).unwrap();
+            writeln!(&mut file, "{}", $content)
+                .unwrap_or_else(|_| panic!("Unable to create file {}.", $path.to_str().unwrap()));
         };
     }
 
@@ -124,5 +134,91 @@ mod tests {
 
         assert_eq!(paths.len(), 2, "There should be 2 paths formatted here");
         assert_vec_eq!(paths, one_arg);
+    }
+
+    #[test]
+    fn test_cli_merge_todo_file() {
+        let todo_yaml_str: &str = r#"_version: 2
+一二三四:
+  en: one two three four"#;
+        let translation_yaml_str: &str = r#"_version: 2
+一二三四:
+  zh-CN: 一二三四"#;
+        let expected_yaml_str: &str = r#"
+_version: 2
+一二三四:
+  en: one two three four
+  zh-CN: 一二三四"#;
+
+        let tmp_dir = std::env::temp_dir();
+
+        let todo_file = tmp_dir.clone().join("TODO.yaml");
+        let yaml_file = tmp_dir.clone().join("yml_file.yaml");
+
+        write_file!(todo_yaml_str, &todo_file);
+        write_file!(translation_yaml_str, &yaml_file);
+
+        write_to_file(&get_merged_string(&[&yaml_file]), &yaml_file);
+
+        let output = open_file_to_string(&yaml_file);
+
+        let output_value = serde_yaml::from_str::<serde_yaml::Value>(&output).unwrap();
+        let expected_value = serde_yaml::from_str::<serde_yaml::Value>(expected_yaml_str).unwrap();
+
+        assert_eq!(output_value, expected_value);
+    }
+
+    #[test]
+    fn test_cli_merge_files() {
+        let json_str: &str = r#"{
+  "_version": 2,
+  "一二三四": {
+    "en": "一二三四",
+    "zh-CN": "一二三四"
+  }
+}"#;
+
+        let yaml_str: &str = r#"_version: 2
+东南四北:
+  en: 东南四北
+  zh-CN: 东南四北"#;
+
+        let toml_str: &str = r#"_version = 2
+["甲乙丙丁"]
+en = "甲乙丙丁"
+zh-CN = "甲乙丙丁""#;
+
+        let expected_yaml_str: &str = r#"_version: 2
+一二三四:
+  en: 一二三四
+  zh-CN: 一二三四
+东南四北:
+  en: 东南四北
+  zh-CN: 东南四北
+甲乙丙丁:
+  en: 甲乙丙丁
+  zh-CN: 甲乙丙丁"#;
+
+        let tmp_dir = std::env::temp_dir();
+
+        let json_file = tmp_dir.clone().join("json_file.json");
+        let yaml_file = tmp_dir.clone().join("yml_file.yaml");
+        let toml_file = tmp_dir.clone().join("toml_file.toml");
+
+        write_file!(json_str, &json_file);
+        write_file!(yaml_str, &yaml_file);
+        write_file!(toml_str, &toml_file);
+
+        write_to_file(
+            &get_merged_string(&[&json_file, &toml_file, &yaml_file]),
+            &yaml_file,
+        );
+
+        let output = open_file_to_string(&yaml_file);
+
+        let output_value = serde_yaml::from_str::<serde_yaml::Value>(&output).unwrap();
+        let expected_value = serde_yaml::from_str::<serde_yaml::Value>(expected_yaml_str).unwrap();
+
+        assert_eq!(output_value, expected_value);
     }
 }
